@@ -58,10 +58,34 @@ new iKillstreak_goal[KS_REWARD_NUM] = {
 
 new iKillstreak[32], iKillstreak_at[32], iKillstreak_used[32];
 new iKillstreak_slow_heal[32], iKillstreak_fast_heal[32], iKillstreak_2x[32], iKillstreak_4x[32];
+new Float:nuke_delay = 0.0;
+new nuke_ended = 0;
+new nuke_issued = -1;
+new Float:nuke_timelimit_before = -1.0;
 
 
 //--------------------------------
 // Helper Functions {{{1
+
+public generate_flash() {
+	new iEntity = create_entity("env_fade");
+
+	new Float:pos[3];
+	pos[0] = 0.0;
+	pos[1] = pos[0];
+	pos[2] = pos[0];
+	entity_set_origin(iEntity, pos);
+	
+	DispatchKeyValue(iEntity, "duration", "5");
+	DispatchKeyValue(iEntity, "holdtime", "1");
+	DispatchKeyValue(iEntity, "renderamt", "255");
+	DispatchKeyValue(iEntity, "rendercolor", "255 255 255");
+	entity_set_int(iEntity, EV_INT_spawnflags, SF_FADE_IN);
+
+	DispatchSpawn(iEntity);
+	force_use(iEntity, iEntity);
+	return iEntity;
+}
 
 stock generate_explosion(Float:fPos[3], iOwner, iMagnitude) {
 	//Create the explosion
@@ -122,13 +146,74 @@ public plugin_init() {
 	);
 
 	//Test Function to make the nuke work without streak requirement
-	register_concmd("ks_nuke", "test_nuke", -1, "");
+	//register_concmd("ks_nuke", "nuke_init", -1, "");
+	//register_concmd("ks_flash", "generate_flash", -1, "");
 }
 
-public test_nuke() {
+public nuke_init(id) {
+	if (nuke_issued == -1) {
+		nuke_issued = id;
+		nuke_delay = 1.0;
+		nuke_timelimit_before = get_cvar_float("mp_timelimit");
+		set_cvar_float("mp_timelimit", 0.0);
+		set_task(nuke_delay, "nuke_generate_explosions");
+		set_task(15.0, "nuke_endgame");
+		set_task(10.0, "generate_flash");
+	}
+	else {
+		client_print(
+			id,
+			print_chat,
+			"[STREAK] Sorry! A nuke is already going off..."
+		);
+	}
+}
+
+public nuke_generate_explosions() {
+	if (nuke_ended == 0) {
+		for (new i = 0; i < 32; i++) {
+			if (is_user_connected(i)) {
+				//Get User Coordinates
+				new origin[3];
+				get_user_origin(i, origin, 0);
+
+				new Float:forigin[3];
+				IVecFVec(origin, forigin);
+
+				forigin[0] += (-150 + random(300));
+				forigin[1] += (-150 + random(300));
+				forigin[2] += (-150 + random(300));
+
+				generate_explosion(forigin, i, 150);
+			}
+		}
+
+		if (nuke_delay > 0.5) {
+			nuke_delay -= (0.0075 + (1.0 - nuke_delay) * 0.75);
+			if (nuke_delay < 0.5)
+				nuke_delay = 0.5;
+		}
+		else
+			nuke_delay -= 0.025;
+
+		//Ensure that it doesn't go below 0.1
+		if (nuke_delay < 0.1)
+			nuke_delay = 0.1;
+
+		set_task(nuke_delay, "nuke_generate_explosions");
+	}
+}
+
+public nuke_endgame() {
 	//Set the match time limit to 0.001 minutes, ending it.
+	nuke_ended = 1;
 	new Float:time_val = 0.001;
 	set_cvar_float("mp_timelimit", time_val);
+	set_task(0.1, "nuke_reset_time");
+}
+
+public nuke_reset_time() {
+	set_cvar_float("mp_timelimit", nuke_timelimit_before);
 }
 
 public killstreak_handle() {
@@ -136,25 +221,27 @@ public killstreak_handle() {
 	new iKiller = read_data(1),
 	    iVictim = read_data(2);
 
-	//Check if the player suicided or not
-	if (iKiller != iVictim) {
-		iKillstreak[iKiller]++;
+	if (iKiller != 0) {
+		//Check if the player suicided or not
+		if (iKiller != iVictim) {
+			iKillstreak[iKiller]++;
 
-		if (iKillstreak[iKiller] >= iKillstreak_goal[iKillstreak_at[iKiller] + 1]) {
-			iKillstreak_at  [iKiller]++;
-			iKillstreak_used[iKiller] = 0;
-			
-			new sUser[64];
-			get_user_name(iKiller, sUser, 64);
+			if (iKillstreak[iKiller] >= iKillstreak_goal[iKillstreak_at[iKiller] + 1]) {
+				iKillstreak_at  [iKiller]++;
+				iKillstreak_used[iKiller] = 0;
+				
+				new sUser[64];
+				get_user_name(iKiller, sUser, 64);
 
-			client_print(
-				0,
-				print_chat,
-				"[STREAK] %s is on a %d Kill Streak! They can use %s!",
-				sUser,
-				iKillstreak[iKiller],
-				sKillstreak_name[iKillstreak_at[iKiller]]
-			);
+				client_print(
+					0,
+					print_chat,
+					"[STREAK] %s is on a %d Kill Streak! They can use %s!",
+					sUser,
+					iKillstreak[iKiller],
+					sKillstreak_name[iKillstreak_at[iKiller]]
+				);
+			}
 		}
 	}
 
@@ -243,7 +330,7 @@ public killstreak_use(id) {
 			}
 			case 7: {
 				//Nuke
-				//TODO: Implement
+				nuke_init(id);
 			}
 			default: {
 				//Killstreak not available
@@ -259,7 +346,17 @@ public killstreak_damage(iVictim, Useless, iAttacker, Float:damage, damagebits) 
 	//Handle damage multipliers... if any.
 	//TODO: Make this look cleaner.
 	//TODO: Implement Auras? (Aura can withstand all damage under XXX)
+	
+	//If there is a nuke going off, the person who issued it is invincible.
+	if (nuke_issued == iVictim) {
+		SetHamParamFloat(4, 0.0);
+		return HAM_HANDLED;
+	}
+
 	if (iAttacker != 0) {
+		//Hitmaker sound
+		client_cmd(iAttacker, "spk ^"%s^"", "custom/mp_hit_indication_3c.wav");
+
 		if (iKillstreak_4x[iAttacker] == 1 && iKillstreak_2x[iAttacker] == 1) {
 			SetHamParamFloat(4, damage * 8.0);
 			return HAM_HANDLED;
